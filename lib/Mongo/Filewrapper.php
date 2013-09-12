@@ -8,13 +8,26 @@ class Mongo_Filewrapper
     protected $_username = '';
     protected $_password = '';
     protected $_database = 'filewrapper';
+    protected $_collection = 'files';
     protected $_options  = array();
 
+    /**
+     * @var MongoClient plain connection to Mongo instance(s)
+     */
     private $_client = null;
+
+    /**
+     * @var MongoDB connection to database
+     */
     private $_db = null;
 
-    public function __construct(array $location = null, array $port = null,
-        string $username = null, string $password= null, string $database = null, array $options = null)
+    /**
+     * @var MongoCollection wrapper for default connection for less code to access this ;)
+     */
+    private $_coll = null;
+
+    public function __construct(array $location = null, array $port = null, string $username = null,
+        string $password= null, string $database = null, string $collection = null, array $options = null)
     {
         if ( !empty($location) )
             $this->_location = $location;
@@ -30,6 +43,9 @@ class Mongo_Filewrapper
 
         if ( !empty($database) )
             $this->_database = $database;
+
+        if ( !empty($collection) )
+            $this->_collection = $collection;
 
         $this->_options = $options;
 
@@ -58,6 +74,8 @@ class Mongo_Filewrapper
         $this->_client = new MongoClient('mongodb://'.$this->buildConenctionString(), $this->_options);
 
         $this->_db = $this->_client->selectDB($this->_database);
+
+        $this->_coll = $this->_db->selectCollection($this->_collection);
     }
 
     protected function buildConenctionString()
@@ -65,7 +83,7 @@ class Mongo_Filewrapper
         $str = '';
         if ( count($this->_location) != count($this->_port) )
         {
-            throw new MongoException("Number of locations does not match number of ports");
+            throw new MongoException("Number of locations does not match number of ports.");
         }
 
         for ($i = 0; $i < count($this->_location); $i++)
@@ -91,33 +109,45 @@ class Mongo_Filewrapper
 
     public function disk_total_space(string $filename)
     {
-        //see dist_free_space
+        //see disk_free_space
         return PHP_INT_MAX;
     }
 
     public function unlink(string $filename)
     {
-
+        return $this->_coll->remove( array('filename' => $filename) );
     }
 
     public function is_file(string $filename)
     {
+        $cursor = $this->_coll->find( array('filename' => $filename) );
 
+        $cnt = 0;
+        foreach ( $cursor as $result )
+        {
+            $cnt++;
+        }
+
+        return $cnt > 0;
     }
 
     public function is_dir(string $filename)
     {
-
+        //we are not interested in directories, we save files including path
+        // so just return true so no one tries to create a document for a directory
+        return true;
     }
 
-    public function glob(string $filename)
+    public function glob(string $filename, int $flag)
     {
-
+        //don't know what to do here, please help!
     }
 
     public function rmdir(string $filename)
     {
-
+        //remove all documents with given string enclosed in '/' (pattern of a directory - name)
+        // if someone finds a better way, please contribute!
+        return $this->_coll->remove( array('filename' => '/\/'.$filename.'\//') );
     }
 
     public function mkdir(string $filename)
@@ -134,12 +164,25 @@ class Mongo_Filewrapper
 
     public function fopen(string $filename)
     {
-
+        //normally returns a filehandle, we just return the filename
+        // so that it will be passed to wrapper - functions which
+        // expect a filename
+        return $filename;
     }
 
     public function stream_get_contents(string $filename)
     {
+        $cursor = $this->_coll->find( array('filename' => $filename) );
 
+        $content = '';
+        foreach ( $cursor as $result )
+        {
+            //if we have more than 1 file we just read the first
+            $content = $result['content'];
+            break;
+        }
+
+        return $content;
     }
 
     public function fclose(string $filename)
@@ -156,11 +199,46 @@ class Mongo_Filewrapper
 
     public function fseek(string $filename, int $offset, int $mode)
     {
+        //we just return $offset even if SEEK_CUR is used
+        // because we do not maintain a position
+        if ( $mode == SEEK_SET || $mode == SEEK_CUR )
+        {
+            return $offset;
+        }
+        if ( $mode == SEEK_END )
+        {
+            $cursor = $this->_coll->find( array('filename' => $filename) );
 
+            $content = '';
+            foreach ( $cursor as $result )
+            {
+                //if we have more than 1 file we just read the first
+                $content = $result['content'];
+                break;
+            }
+
+            $len = strlen($content);
+
+            return $len + $offset;
+        }
     }
 
     public function ftruncate(string $filename, int $size)
     {
+        $cursor = $this->_coll->find( array('filename' => $filename) );
 
+        $content = '';
+        $res = null;
+        foreach ( $cursor as $result )
+        {
+            //if we have more than 1 file we just read the first
+            $content = $result['content'];
+            $res = $result;
+            break;
+        }
+
+        $newStr = substr($content, 0, $size);
+        $res['content'] = $newStr;
+        return $this->_coll->update( array('filename' => $filename), $res );
     }
 }
